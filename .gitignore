@@ -11,9 +11,6 @@ venv/
 .vscode/
 .idea/
 
-# Output Images
-images/output/
-
 # OS Files
 .DS_Store
 Thumbs.db
