@@ -1,13 +1,21 @@
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*.pyo
 
+# Virtual Environment
+.venv/
+venv/
+
+# IDE
 .vscode/
 .idea/
 
-.env
-venv/
-
+# Output Images
 images/output/
 
+# OS Files
 .DS_Store
 Thumbs.db
+
+images/output.zip

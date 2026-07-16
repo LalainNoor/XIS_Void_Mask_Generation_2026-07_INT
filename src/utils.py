@@ -132,6 +132,7 @@ def filter_by_area(contours):
 
     return filtered
 
+
 def filter_child_contours(contours, hierarchy):
     """
     Keep only child contours.
@@ -252,5 +253,81 @@ def filter_by_shape(properties):
 
     return filtered
 
+def measure_local_contrast(image, properties):
+    """
+    Keep contours that are darker than their local surroundings.
+    """
+
+    filtered = []
+
+    for p in properties:
+
+        contour = p["contour"]
+
+        # Mask of contour
+        contour_mask = np.zeros(
+            image.shape,
+            dtype=np.uint8
+        )
+
+        cv2.drawContours(
+            contour_mask,
+            [contour],
+            -1,
+            255,
+            -1
+        )
+
+        # Dilated contour (outer ring)
+        kernel = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE,
+            (
+                2 * RING_THICKNESS + 1,
+                2 * RING_THICKNESS + 1
+            )
+        )
+
+        dilated = cv2.dilate(
+            contour_mask,
+            kernel
+        )
+
+        # Ring = dilated - contour
+        ring_mask = cv2.subtract(
+            dilated,
+            contour_mask
+        )
+
+        contour_mean = cv2.mean(
+            image,
+            mask=contour_mask
+        )[0]
+
+        ring_mean = cv2.mean(
+            image,
+            mask=ring_mask
+        )[0]
+
+        contrast = ring_mean - contour_mean
+
+        p["local_contrast"] = contrast
+
+    return properties
+
+def filter_by_local_contrast(properties):
+    """
+    Filter contours based on local contrast.
+    """
+
+    filtered = []
+
+    for p in properties:
+
+        if p["local_contrast"] < MIN_CONTRAST_DIFFERENCE:
+            continue
+
+        filtered.append(p)
+
+    return filtered
 
 

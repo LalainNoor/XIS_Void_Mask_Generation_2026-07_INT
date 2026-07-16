@@ -25,6 +25,7 @@ def main():
         # Preprocess image
         gray, clahe, blurred = preprocess_image(image)
 
+
         # Find all contours
         binary, contours, hierarchy = find_void_candidates(blurred)
 
@@ -44,27 +45,37 @@ def main():
             gray,
             area_filtered_contours
         )
-        """
-        if idx == 0:
 
-            print("\nMean Intensities")
+        # Measure local contrast
+        properties = measure_local_contrast(
+            gray,
+            properties
+        )
 
-            for p in properties:
-
-                print(
-                    f"ID:{p['id']:2d} | "
-                    f"Intensity:{p['mean_intensity']:.1f}"
-                )
-            """
-        
+        # Filter by shape
         shape_filtered = filter_by_shape(
             properties
         )
 
+        # Debug local contrast values
+        if idx == DEBUG_IMAGE_INDEX:
+            """
+            print("\nLocal Contrast Values")
+
+            for p in shape_filtered:
+
+                print(
+                    f"ID:{p['id']:2d} | "
+                    f"Contrast:{p['local_contrast']:.2f}"
+                )
+             """
         final_contours = [
             p["contour"]
             for p in shape_filtered
         ]
+
+        print(f"\n{file}")
+        print(f"Final contours: {len(final_contours)}")
 
         # Draw final contours
         overlay = draw_contours(
@@ -74,30 +85,35 @@ def main():
 
         filename = os.path.splitext(file)[0]
 
-        # Save intermediate images
-        save_image(
-            os.path.join(OUTPUT_DIR, f"{filename}_gray.png"),
-            gray
-        )
+        # Save debug images only when enabled
+        if DEBUG_MODE:
 
-        save_image(
-            os.path.join(OUTPUT_DIR, f"{filename}_clahe.png"),
-            clahe
-        )
+            save_image(
+                os.path.join(OUTPUT_DIR, f"{filename}_gray.png"),
+                gray
+            )
 
-        save_image(
-            os.path.join(OUTPUT_DIR, f"{filename}_blur.png"),
-            blurred
-        )
+            save_image(
+                os.path.join(OUTPUT_DIR, f"{filename}_clahe.png"),
+                clahe
+            )
 
-        save_image(
-            os.path.join(OUTPUT_DIR, f"{filename}_binary.png"),
-            binary
-        )
+            save_image(
+                os.path.join(OUTPUT_DIR, f"{filename}_blur.png"),
+                blurred
+            )
 
-        # Save final overlay
+            save_image(
+                os.path.join(OUTPUT_DIR, f"{filename}_binary.png"),
+                binary
+            )
+
+        # Save final output
         save_image(
-            os.path.join(OUTPUT_DIR, f"{filename}_voids.png"),
+            os.path.join(
+                OUTPUT_DIR,
+                f"{filename}_voids.png"
+            ),
             overlay
         )
 
@@ -107,7 +123,8 @@ def main():
             f"{len(contours)} total | "
             f"{len(child_contours)} child | "
             f"{len(area_filtered_contours)} area | "
-            f"{len(shape_filtered)} shape"
+            f"{len(shape_filtered)} shape | "
+            f"{len(shape_filtered)} final"
         )
 
         # Uncomment only when debugging contour measurements
