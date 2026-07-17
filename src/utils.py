@@ -4,330 +4,214 @@ import numpy as np
 
 from config import *
 
+
 def create_directory(path):
-    """Create directory if it doesn't exist."""
     os.makedirs(path, exist_ok=True)
 
 
 def load_image(image_path):
-    """Load image in color."""
     image = cv2.imread(image_path)
-
     if image is None:
         raise FileNotFoundError(f"Unable to load image: {image_path}")
-
     return image
 
 
 def to_grayscale(image):
-    """Convert BGR image to grayscale."""
     return cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-
-
-def apply_gaussian_blur(gray, kernel_size):
-    """Reduce image noise."""
-    return cv2.GaussianBlur(gray, kernel_size, 0)
-
-
-def apply_clahe(gray, clip_limit, grid_size):
-    """Enhance local contrast."""
-    clahe = cv2.createCLAHE(
-        clipLimit=clip_limit,
-        tileGridSize=grid_size
-    )
-    return clahe.apply(gray)
 
 
 def save_image(path, image):
     cv2.imwrite(path, image)
 
 
-def preprocess_image(image):
+# ---------------------------------------------------------------
+# STAGE 1: Solder segmentation
+# ---------------------------------------------------------------
+
+def segment_solders(gray):
     """
-    Complete preprocessing pipeline.
-    Returns:
-        gray
-        clahe
-        blurred
+    Segment solder (pad/lead) regions from background and thin traces.
+    Solders are the solid mid-gray blobs (leads, big square pad, etc).
     """
+    blurred = cv2.GaussianBlur(gray, SOLDER_BLUR_KERNEL, 0)
 
-    gray = to_grayscale(image)
-
-    clahe = apply_clahe(
-        gray,
-        CLAHE_CLIP_LIMIT,
-        CLAHE_GRID_SIZE
-    )
-
-    blurred = apply_gaussian_blur(
-        clahe,
-        GAUSSIAN_KERNEL
-    )
-
-    return gray, clahe, blurred
-
-def find_void_candidates(image):
-    """
-    Find all potential void contours.
-
-    Parameters:
-        image (numpy.ndarray): Preprocessed grayscale image.
-
-    Returns:
-        binary (numpy.ndarray): Binary image used for contour detection.
-        contours (list): All detected contours.
-    """
-
-    # Otsu threshold
+    # Otsu split: background/thin traces vs solid solder bodies
     _, binary = cv2.threshold(
-        image,
-        0,
-        255,
+        blurred, 0, 255,
         cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
     )
 
-    contours, hierarchy = cv2.findContours(
-        binary,
-        cv2.RETR_TREE,
-        cv2.CHAIN_APPROX_SIMPLE
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, SOLDER_MORPH_KERNEL)
+    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=2)
+    binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=1)
+
+    contours, _ = cv2.findContours(
+        binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
     )
 
-    return binary, contours, hierarchy
+    solders = []
+    for c in contours:
+        area = cv2.contourArea(c)
+        if SOLDER_MIN_AREA <= area <= SOLDER_MAX_AREA:
+            solders.append(c)
 
-def draw_contours(image, contours):
+    return solders, binary
+
+
+def classify_solder(contour):
     """
-    Draw all detected contours.
+    Bucket a solder contour into a shape class based on its area and
+    aspect ratio (long side / short side of the min-area rectangle).
+
+    Returns one of: "solder_long", "solder_large", "solder_middle", "solder"
     """
+    area = cv2.contourArea(contour)
+    (_, _), (w, h), _ = cv2.minAreaRect(contour)
+    long_side, short_side = max(w, h), min(w, h)
+    aspect_ratio = (long_side / short_side) if short_side > 0 else 0
 
-    output = image.copy()
+    if aspect_ratio >= SOLDER_LONG_ASPECT_THRESH:
+        return "solder_long"
+    if area >= SOLDER_LARGE_AREA_THRESH:
+        return "solder_large"
+    if area >= SOLDER_MIDDLE_AREA_THRESH:
+        return "solder_middle"
+    return "solder"
 
-    cv2.drawContours(
-        output,
-        contours,
-        -1,
-        (0, 255, 0),
-        1
-    )
 
-    return output
+# ---------------------------------------------------------------
+# STAGE 2: Void detection, local to each solder
+# ---------------------------------------------------------------
 
-def filter_by_area(contours):
+def stretch_contrast(roi_gray, roi_mask):
     """
-    Keep contours whose area lies within the configured range.
+    Local CLAHE + min-max stretch confined to masked pixels only,
+    so dim/low-contrast solders get their voids pulled out too.
     """
+    masked_vals = roi_gray[roi_mask == 255]
+    if masked_vals.size == 0:
+        return roi_gray
 
-    filtered = []
+    clahe = cv2.createCLAHE(clipLimit=CLAHE_CLIP_LIMIT, tileGridSize=CLAHE_GRID_SIZE)
+    enhanced = clahe.apply(roi_gray)
 
-    for contour in contours:
+    # Min-max stretch using only in-mask pixel range
+    vmin = np.percentile(masked_vals, 2)
+    vmax = np.percentile(masked_vals, 98)
+    if vmax <= vmin:
+        return enhanced
 
-        area = cv2.contourArea(contour)
-
-        if area < MIN_CONTOUR_AREA:
-            continue
-
-        if area > MAX_CONTOUR_AREA:
-            continue
-
-        filtered.append(contour)
-
-    return filtered
+    stretched = np.clip((enhanced.astype(np.float32) - vmin) * 255.0 / (vmax - vmin), 0, 255)
+    return stretched.astype(np.uint8)
 
 
-def filter_child_contours(contours, hierarchy):
+def find_voids_in_solder(gray, solder_contour, void_params=None):
     """
-    Keep only child contours.
-    """
+    Detect voids strictly inside one solder's mask.
+    Voids are brighter blobs than surrounding solder -> local Otsu
+    on contrast-stretched ROI, restricted to the mask.
 
-    if hierarchy is None:
+    void_params: optional dict with keys min_area, max_area,
+    min_circularity, min_solidity. Falls back to the global VOID_*
+    config defaults when not provided (or when a key is missing) so
+    this stays backward compatible with old call sites.
+    """
+    params = void_params or {}
+    min_area = params.get("min_area", VOID_MIN_AREA)
+    max_area = params.get("max_area", VOID_MAX_AREA)
+    min_circularity = params.get("min_circularity", VOID_MIN_CIRCULARITY)
+    min_solidity = params.get("min_solidity", VOID_MIN_SOLIDITY)
+    x, y, w, h = cv2.boundingRect(solder_contour)
+    pad = 2
+    x0, y0 = max(x - pad, 0), max(y - pad, 0)
+    x1, y1 = min(x + w + pad, gray.shape[1]), min(y + h + pad, gray.shape[0])
+
+    roi_gray = gray[y0:y1, x0:x1]
+    if roi_gray.size == 0:
         return []
 
-    hierarchy = hierarchy[0]
+    mask = np.zeros(gray.shape, dtype=np.uint8)
+    cv2.drawContours(mask, [solder_contour], -1, 255, -1)
+    roi_mask = mask[y0:y1, x0:x1]
 
-    filtered = []
+    if np.count_nonzero(roi_mask) < min_area:
+        return []
 
-    for i, contour in enumerate(contours):
+    enhanced = stretch_contrast(roi_gray, roi_mask)
 
-        # Parent index
-        parent = hierarchy[i][3]
+    # Erode mask slightly so solder edge/background bleed isn't picked as void
+    erode_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    inner_mask = cv2.erode(roi_mask, erode_kernel, iterations=1)
 
-        # Keep only contours that have a parent
-        if parent != -1:
-            filtered.append(contour)
+    _, local_binary = cv2.threshold(
+        enhanced, 0, 255,
+        cv2.THRESH_BINARY + cv2.THRESH_OTSU
+    )
+    local_binary = cv2.bitwise_and(local_binary, local_binary, mask=inner_mask)
 
-    return filtered
+    # Clean speckle noise
+    clean_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
+    local_binary = cv2.morphologyEx(local_binary, cv2.MORPH_OPEN, clean_kernel)
 
-def measure_contour_properties(image, contours):
-    """
-    Measure geometric and intensity properties of contours.
+    contours, _ = cv2.findContours(
+        local_binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
 
-    Parameters:
-        image: Grayscale image.
-        contours: List of contours.
+    voids = []
+    for c in contours:
+        area = cv2.contourArea(c)
+        if area < min_area or area > max_area:
+            continue
 
-    Returns:
-        properties: List of dictionaries.
-    """
-
-    properties = []
-
-    for i, contour in enumerate(contours):
-
-        area = cv2.contourArea(contour)
-
-        perimeter = cv2.arcLength(contour, True)
-
+        perimeter = cv2.arcLength(c, True)
         if perimeter == 0:
             continue
 
-        circularity = (4 * np.pi * area) / (perimeter * perimeter)
+        circularity = (4 * np.pi * area) / (perimeter ** 2)
+        if circularity < min_circularity:
+            continue
 
-        hull = cv2.convexHull(contour)
+        hull = cv2.convexHull(c)
         hull_area = cv2.contourArea(hull)
-
-        solidity = 0
-
-        if hull_area > 0:
-            solidity = area / hull_area
-
-        x, y, w, h = cv2.boundingRect(contour)
-
-        aspect_ratio = w / h if h > 0 else 0
-
-        # Mask for intensity calculation
-        mask = np.zeros(image.shape, dtype=np.uint8)
-
-        cv2.drawContours(
-            mask,
-            [contour],
-            -1,
-            255,
-            -1
-        )
-
-        mean_intensity = cv2.mean(image, mask=mask)[0]
-
-        properties.append({
-
-        "id": i,
-
-        "contour": contour,
-
-        "area": area,
-
-        "perimeter": perimeter,
-
-        "circularity": circularity,
-
-        "solidity": solidity,
-
-        "aspect_ratio": aspect_ratio,
-
-        "mean_intensity": mean_intensity
-        
-    })
-        
-    return properties
-
-def filter_by_shape(properties):
-    """
-    Filter contours using geometric properties.
-    """
-
-    filtered = []
-
-    for p in properties:
-
-        if p["circularity"] < MIN_CIRCULARITY:
+        solidity = area / hull_area if hull_area > 0 else 0
+        if solidity < min_solidity:
             continue
 
-        if p["solidity"] < MIN_SOLIDITY:
-            continue
+        c_shifted = c + [x0, y0]
+        voids.append(c_shifted)
 
-        if p["aspect_ratio"] < MIN_ASPECT_RATIO:
-            continue
+    return voids
 
-        if p["aspect_ratio"] > MAX_ASPECT_RATIO:
-            continue
 
-        filtered.append(p)
+# ---------------------------------------------------------------
+# Drawing helpers
+# ---------------------------------------------------------------
 
-    return filtered
-
-def measure_local_contrast(image, properties):
+def draw_results(image, classified_solders, voids):
     """
-    Keep contours that are darker than their local surroundings.
+    classified_solders: list of (contour, class_name) tuples. The class
+    is not used for coloring here (every solder is drawn the same
+    color) -- it's only kept around because generate_masks.py still
+    needs it to pick per-class void params before calling this.
+    voids: flat list of void contours (already in full-image coords),
+    covering both big and small voids across all solders.
     """
+    output = image.copy()
 
-    filtered = []
+    solder_contours = [contour for contour, _ in classified_solders]
+    cv2.drawContours(output, solder_contours, -1, SOLDER_COLOR, 2)
+    cv2.drawContours(output, voids, -1, VOID_COLOR, 2)
+    return output
 
-    for p in properties:
 
-        contour = p["contour"]
-
-        # Mask of contour
-        contour_mask = np.zeros(
-            image.shape,
-            dtype=np.uint8
-        )
-
-        cv2.drawContours(
-            contour_mask,
-            [contour],
-            -1,
-            255,
-            -1
-        )
-
-        # Dilated contour (outer ring)
-        kernel = cv2.getStructuringElement(
-            cv2.MORPH_ELLIPSE,
-            (
-                2 * RING_THICKNESS + 1,
-                2 * RING_THICKNESS + 1
-            )
-        )
-
-        dilated = cv2.dilate(
-            contour_mask,
-            kernel
-        )
-
-        # Ring = dilated - contour
-        ring_mask = cv2.subtract(
-            dilated,
-            contour_mask
-        )
-
-        contour_mean = cv2.mean(
-            image,
-            mask=contour_mask
-        )[0]
-
-        ring_mean = cv2.mean(
-            image,
-            mask=ring_mask
-        )[0]
-
-        contrast = ring_mean - contour_mean
-
-        p["local_contrast"] = contrast
-
-    return properties
-
-def filter_by_local_contrast(properties):
+def build_void_mask(image_shape, voids):
     """
-    Filter contours based on local contrast.
+    Build a single-channel binary mask (0/255), same H x W as the source
+    image, with every void filled in white. This is the actual "void
+    mask" -- not a visualization, just the raw detected regions.
     """
-
-    filtered = []
-
-    for p in properties:
-
-        if p["local_contrast"] < MIN_CONTRAST_DIFFERENCE:
-            continue
-
-        filtered.append(p)
-
-    return filtered
-
-
+    h, w = image_shape[:2]
+    mask = np.zeros((h, w), dtype=np.uint8)
+    if voids:
+        cv2.drawContours(mask, voids, -1, 255, thickness=-1)
+    return mask

@@ -1,149 +1,71 @@
 import os
+import cv2
 
 from config import *
 from utils import *
 
 
 def main():
-
     create_directory(OUTPUT_DIR)
+    masks_dir = os.path.join(OUTPUT_DIR, "masks")
+    create_directory(masks_dir)
+    for class_name in CLASS_VOID_PARAMS:
+        create_directory(os.path.join(masks_dir, class_name))
 
     image_files = sorted([
-        file for file in os.listdir(INPUT_DIR)
-        if file.lower().endswith((".png", ".jpg", ".jpeg", ".bmp", ".tif"))
+        f for f in os.listdir(INPUT_DIR)
+        if f.lower().endswith((".png", ".jpg", ".jpeg", ".bmp", ".tif"))
     ])
 
     print(f"\nFound {len(image_files)} images.\n")
 
-    for idx, file in enumerate(image_files):
-
+    for file in image_files:
         image_path = os.path.join(INPUT_DIR, file)
-
-        # Load image
         image = load_image(image_path)
+        gray = to_grayscale(image)
 
-        # Preprocess image
-        gray, clahe, blurred = preprocess_image(image)
+        # Stage 1: solders
+        solders, solder_binary = segment_solders(gray)
 
+        # Stage 1b: classify each solder's shape so we can use per-class
+        # void params and color-code the overlay
+        classified_solders = [(c, classify_solder(c)) for c in solders]
 
-        # Find all contours
-        binary, contours, hierarchy = find_void_candidates(blurred)
+        # Stage 2: voids, local to each solder, using that class's params.
+        # Kept both flat (for the overlay/combined mask) and grouped by
+        # class (for the per-class masks).
+        all_voids = []
+        voids_by_class = {}
+        class_counts = {}
+        for contour, class_name in classified_solders:
+            void_params = CLASS_VOID_PARAMS.get(class_name)
+            voids = find_voids_in_solder(gray, contour, void_params)
+            all_voids.extend(voids)
+            voids_by_class.setdefault(class_name, []).extend(voids)
+            class_counts[class_name] = class_counts.get(class_name, 0) + 1
 
-        # Keep only child contours
-        child_contours = filter_child_contours(
-            contours,
-            hierarchy
-        )
-
-        # Remove tiny contours
-        area_filtered_contours = filter_by_area(
-            child_contours
-        )
-
-        # Measure contour properties
-        properties = measure_contour_properties(
-            gray,
-            area_filtered_contours
-        )
-
-        # Measure local contrast
-        properties = measure_local_contrast(
-            gray,
-            properties
-        )
-
-        # Filter by shape
-        shape_filtered = filter_by_shape(
-            properties
-        )
-
-        # Debug local contrast values
-        if idx == DEBUG_IMAGE_INDEX:
-            """
-            print("\nLocal Contrast Values")
-
-            for p in shape_filtered:
-
-                print(
-                    f"ID:{p['id']:2d} | "
-                    f"Contrast:{p['local_contrast']:.2f}"
-                )
-             """
-        final_contours = [
-            p["contour"]
-            for p in shape_filtered
-        ]
-
-        print(f"\n{file}")
-        print(f"Final contours: {len(final_contours)}")
-
-        # Draw final contours
-        overlay = draw_contours(
-            image.copy(),
-            final_contours
-        )
+        overlay = draw_results(image, classified_solders, all_voids)
 
         filename = os.path.splitext(file)[0]
 
-        # Save debug images only when enabled
         if DEBUG_MODE:
+            save_image(os.path.join(OUTPUT_DIR, f"{filename}_solder_binary.png"), solder_binary)
 
-            save_image(
-                os.path.join(OUTPUT_DIR, f"{filename}_gray.png"),
-                gray
-            )
+        save_image(os.path.join(OUTPUT_DIR, f"{filename}_voids.png"), overlay)
 
-            save_image(
-                os.path.join(OUTPUT_DIR, f"{filename}_clahe.png"),
-                clahe
-            )
+        # Combined binary void mask (every void, any class, filled white)
+        combined_mask = build_void_mask(gray.shape, all_voids)
+        save_image(os.path.join(masks_dir, f"{filename}_mask.png"), combined_mask)
 
-            save_image(
-                os.path.join(OUTPUT_DIR, f"{filename}_blur.png"),
-                blurred
-            )
+        # Per-class binary void masks
+        for class_name, class_voids in voids_by_class.items():
+            class_mask = build_void_mask(gray.shape, class_voids)
+            class_dir = os.path.join(masks_dir, class_name)
+            create_directory(class_dir)
+            save_image(os.path.join(class_dir, f"{filename}_mask.png"), class_mask)
 
-            save_image(
-                os.path.join(OUTPUT_DIR, f"{filename}_binary.png"),
-                binary
-            )
-
-        # Save final output
-        save_image(
-            os.path.join(
-                OUTPUT_DIR,
-                f"{filename}_voids.png"
-            ),
-            overlay
-        )
-
-        # Print pipeline statistics
-        print(
-            f"{file} -> "
-            f"{len(contours)} total | "
-            f"{len(child_contours)} child | "
-            f"{len(area_filtered_contours)} area | "
-            f"{len(shape_filtered)} shape | "
-            f"{len(shape_filtered)} final"
-        )
-
-        # Uncomment only when debugging contour measurements
-        """
-        if idx == 0:
-
-            print("\nContour Properties")
-
-            for p in properties:
-
-                print(
-                    f"ID:{p['id']:2d} | "
-                    f"Area:{p['area']:.1f} | "
-                    f"Circularity:{p['circularity']:.2f} | "
-                    f"Solidity:{p['solidity']:.2f} | "
-                    f"Aspect:{p['aspect_ratio']:.2f} | "
-                    f"Intensity:{p['mean_intensity']:.1f}"
-                )
-        """
+        class_summary = ", ".join(f"{k}={v}" for k, v in sorted(class_counts.items()))
+        print(f"{file}: {len(solders)} solders ({class_summary}), {len(all_voids)} voids")
 
     print("\nProcessing completed successfully.")
 
