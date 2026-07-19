@@ -1,18 +1,34 @@
+# Input/output images (usually large, not tracked)
+images/input/
+images/output/
+
 # Python
 __pycache__/
 *.py[cod]
 *.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
 
-# Virtual Environment
-.venv/
+# Virtual environments
 venv/
+.venv/
+env/
 
-# IDE
+# IDEs
 .vscode/
 .idea/
+*.swp
+*.swo
 
-# OS Files
+# OS
 .DS_Store
 Thumbs.db
+
+# Logs
+*.log
 
 images/output.zip

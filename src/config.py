@@ -1,77 +1,72 @@
-# Input / Output Paths
 INPUT_DIR = "images/input"
 OUTPUT_DIR = "images/output"
 
-# ---------------- Solder (pad/lead) detection ----------------
 SOLDER_BLUR_KERNEL = (5, 5)
 SOLDER_MIN_AREA = 600
-SOLDER_MAX_AREA = 400000  # raised again -- some boards have a large body/ground
-                          # pad (~250-310k px) that should still be classed as
-                          # solder_large and checked for voids
+SOLDER_MAX_AREA = 400000
 SOLDER_MORPH_KERNEL = (7, 7)
+BORDER_MARGIN = 20
+BORDER_SPAN_FRACTION = 0.5
+SOLDER_MIN_SOLIDITY = 0.68
+SOLDER_MAX_MEAN_BRIGHTNESS = 200
+SOLDER_BRIGHT_PIXEL_RATIO = 0.25
+SOLDER_MIN_AREA_BORDER_TOUCH = 12000
+SOLDER_MAX_ASPECT_BORDER = 3.5
+SOLDER_MIN_CIRCULARITY_BORDER = 0.45
 
-# ---------------- Void detection (per solder, local) ----------------
-# These are the fallback / default params, used for any class not
-# listed in CLASS_VOID_PARAMS below.
-VOID_MIN_AREA = 3
+VOID_MIN_AREA = 4
 VOID_MAX_AREA = 900
-VOID_MIN_CIRCULARITY = 0.55
+VOID_MIN_CIRCULARITY = 0.60
 VOID_MIN_SOLIDITY = 0.80
+VOID_MAX_ASPECT_RATIO = 3.0
+VOID_MIN_BRIGHTNESS_RATIO = 1.05
 
-# Local contrast enhancement inside each solder ROI before thresholding
 CLAHE_CLIP_LIMIT = 3.0
 CLAHE_GRID_SIZE = (4, 4)
 
-# ---------------- Solder classification ----------------
-# Every solder contour is bucketed into one of these classes based on
-# its area and aspect ratio (long side / short side of minAreaRect).
-# Checked top-to-bottom; first match wins.
-#
-#   solder_long   -> thin elongated bars / traces (very high aspect ratio)
-#   solder_large  -> big square/rect pads or IC bodies (large area)
-#   solder_middle -> medium pads, in between a lead and a large pad
-#   solder        -> default: a regular individual lead/pad
-SOLDER_LONG_ASPECT_THRESH = 4.0   # aspect_ratio >= this -> solder_long
-SOLDER_LARGE_AREA_THRESH = 15000  # area >= this (and not "long") -> solder_large
-SOLDER_MIDDLE_AREA_THRESH = 3000  # area >= this -> solder_middle
+SOLDER_LONG_ASPECT_THRESH = 4.0
+SOLDER_LARGE_AREA_THRESH = 15000
+SOLDER_MIDDLE_AREA_THRESH = 3000
 
-# Per-class void detection params. Any class/key omitted here falls back
-# to the VOID_* defaults above. Tune these independently per class.
 CLASS_VOID_PARAMS = {
     "solder": {
-        "min_area": VOID_MIN_AREA,
-        "max_area": VOID_MAX_AREA,
-        "min_circularity": VOID_MIN_CIRCULARITY,
-        "min_solidity": VOID_MIN_SOLIDITY,
+        "min_area": 4,
+        "max_area": 8000,
+        "min_circularity": 0.50,
+        "min_solidity": 0.72,
+        "max_aspect_ratio": 2.8,
+        "min_brightness_ratio": 1.06,
+        "use_tophat": True,
     },
     "solder_middle": {
         "min_area": 5,
-        "max_area": 1400,
-        "min_circularity": 0.55,
-        "min_solidity": 0.80,
+        "max_area": 15000,
+        "min_circularity": 0.42,
+        "min_solidity": 0.62,
+        "max_aspect_ratio": 3.0,
+        "min_brightness_ratio": 1.05,
+        "use_tophat": True,
     },
     "solder_large": {
-        "min_area": 8,
-        "max_area": 4000,
-        "min_circularity": 0.50,
-        "min_solidity": 0.75,
+        "min_area": 25,          # raised — kills tiny speckle dots on large pads
+        "max_area": 120000,
+        "min_circularity": 0.38,
+        "min_solidity": 0.58,
+        "max_aspect_ratio": 4.0,
+        "min_brightness_ratio": 1.04,
+        "use_tophat": False,     # OFF — top-hat was picking up gradient artifacts on big pads
     },
     "solder_long": {
-        "min_area": 3,
-        "max_area": 900,
-        "min_circularity": 0.55,
-        "min_solidity": 0.80,
+        "min_area": 5,
+        "max_area": 50000,
+        "min_circularity": 0.40,
+        "min_solidity": 0.60,
+        "max_aspect_ratio": 3.5,
+        "min_brightness_ratio": 1.04,
+        "use_tophat": False,     # OFF — same issue on long connector pads
     },
 }
 
-# Single color used to draw every solder's outline, regardless of class
-# (class is still tracked internally to pick per-class void params below,
-# it's just no longer color-coded in the overlay)
-SOLDER_COLOR = (255, 128, 0)  # BGR: orange
-
-# Voids are drawn in this color, filled circle/blob for every detected
-# void regardless of size (big or small)
-VOID_COLOR = (0, 255, 0)  # BGR: green. Swap to (0, 0, 255) for red.
-
-# Debug
-DEBUG_MODE = True
+SOLDER_COLOR = (255, 128, 0)
+VOID_COLOR   = (0, 255, 0)
+DEBUG_MODE   = True
