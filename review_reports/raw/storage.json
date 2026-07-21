@@ -1,0 +1,20 @@
+{
+    "status": "PASS",
+    "directories": {
+        "images/output": {
+            "before_mb": 10.56,
+            "after_mb": 10.56,
+            "growth_mb": 0.0
+        },
+        "images/output/masks": {
+            "before_mb": 0.13,
+            "after_mb": 0.13,
+            "growth_mb": 0.0
+        }
+    },
+    "summary": {
+        "before_mb": 10.69,
+        "after_mb": 10.69,
+        "growth_mb": 0.0
+    }
+}

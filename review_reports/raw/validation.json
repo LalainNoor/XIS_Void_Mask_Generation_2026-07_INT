@@ -1,0 +1,22 @@
+{
+    "status": "PASS",
+    "summary": {
+        "expected_outputs": 2,
+        "validated_outputs": 2,
+        "missing_outputs": 0
+    },
+    "outputs": {
+        "images/output": {
+            "exists": true,
+            "status": "PASS",
+            "file_count": 15,
+            "path": "E:\\XIS_Void_Mask_Generation_2026-07_INT\\images\\output"
+        },
+        "images/output/masks": {
+            "exists": true,
+            "status": "PASS",
+            "file_count": 11,
+            "path": "E:\\XIS_Void_Mask_Generation_2026-07_INT\\images\\output\\masks"
+        }
+    }
+}

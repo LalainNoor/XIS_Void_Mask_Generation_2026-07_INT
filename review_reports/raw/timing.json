@@ -1,0 +1,11 @@
+{
+    "status": "PASS",
+    "stages": {
+        "Generate Void Masks": {
+            "seconds": 3.212
+        }
+    },
+    "summary": {
+        "total_seconds": 3.212
+    }
+}
